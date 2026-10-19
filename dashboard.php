@@ -1,14 +1,13 @@
 <?php
 require "auth.php";
+require "blog_cud.php";
+require "blog_data.php";
 
 $conn        = $auth_functions->conn;
 $isLoggedIn  = isset($_SESSION['userId']);
 $blogId      = (int) ($_GET['id'] ?? 0);
 $postBlogId  = (int) ($_POST['blog_id'] ?? 0);
 $categories  = ['Food and Cooking', 'Lifestyle', 'Health and Fitness', 'Technology', 'Travel', 'Education'];
-$error       = '';
-$editError   = '';
-$editErrorId = 0;
 
 $message = $_SESSION['message'] ?? '';
 unset($_SESSION['message']);
@@ -20,122 +19,37 @@ function shortText(string $text, int $limit = 250): string {
     return mb_strlen($text) > $limit ? mb_substr($text, 0, $limit) . '...' : $text;
 }
 
-// add Blog
-if ($isLoggedIn && isset($_POST['publish-btn'])) {
-    $title    = trim($_POST['title'] ?? '');
-    $content  = trim($_POST['content'] ?? '');
-    $category = $_POST['category'] ?? '';
+// Blog_cud for create and update and delete blog, and add comment
+$blog_cud = new Blog_cud($conn, $blogId, $postBlogId, $categories);
 
-    if ($title === '' || $content === '' || !in_array($category, $categories, true)) {
-        $error = "Please fill in all fields.";
-    } else {
-        $stmt = $conn->prepare("INSERT INTO blogs (user_id, title, blog, category) VALUES (?, ?, ?, ?)");
-        $stmt->bind_param("isss", $_SESSION['userId'], $title, $content, $category);
-        $stmt->execute();
-        $_SESSION['message'] = "Blog created.";
-        header("Location: dashboard.php");
-        exit;
-    }
-}
+$blog_cud->addBlog();
+$blog_cud->updateBlog();
+$blog_cud->deleteBlog();
 
-// update Blog
-if ($isLoggedIn && $postBlogId && isset($_POST['update-btn'])) {
-    $title    = trim($_POST['title'] ?? '');
-    $content  = trim($_POST['content'] ?? '');
-    $category = $_POST['category'] ?? '';
 
-    if ($title === '' || $content === '' || !in_array($category, $categories, true)) {
-        $editError   = "Please fill in all fields.";
-        $editErrorId = $postBlogId;
-    } else {
-        $stmt = $conn->prepare("UPDATE blogs SET title = ?, blog = ?, category = ? WHERE id = ? AND user_id = ?");
-        $stmt->bind_param("sssii", $title, $content, $category, $postBlogId, $_SESSION['userId']);
-        $stmt->execute();
-        $_SESSION['message'] = "Blog updated.";
-        header("Location: dashboard.php" . (!empty($_SERVER['QUERY_STRING']) ? "?" . $_SERVER['QUERY_STRING'] : ""));
-        exit;
-    }
-}
+$error       = $blog_cud->error;
+$editError   = $blog_cud->editError;
+$editErrorId = $blog_cud->editErrorId;
 
-// delete Blog
-if ($isLoggedIn && $postBlogId && isset($_POST['delete-btn'])) {
-    $stmt = $conn->prepare("SELECT id FROM blogs WHERE id = ? AND user_id = ?");
-    $stmt->bind_param("ii", $postBlogId, $_SESSION['userId']);
-    $stmt->execute();
 
-    if ($stmt->get_result()->fetch_assoc()) {
-        $stmt = $conn->prepare("DELETE FROM comments WHERE blog_id = ?");
-        $stmt->bind_param("i", $postBlogId);
-        $stmt->execute();
-
-        $stmt = $conn->prepare("DELETE FROM blogs WHERE id = ?");
-        $stmt->bind_param("i", $postBlogId);
-        $stmt->execute();
-        $_SESSION['message'] = "Blog deleted.";
-    }
-    header("Location: dashboard.php");
-    exit;
-}
-
-// add comment
-if ($isLoggedIn && $blogId && isset($_POST['comment-btn'])) {
-    $comment = trim($_POST['comment'] ?? '');
-
-    if ($comment !== '') {
-        $stmt = $conn->prepare("INSERT INTO comments (user_id, blog_id, comment) VALUES (?, ?, ?)");
-        $stmt->bind_param("iis", $_SESSION['userId'], $blogId, $comment);
-        $stmt->execute();
-    }
-    header("Location: dashboard.php?id=$blogId");
-    exit;
-}
-
+// Blog_Data for loading the data and info of the blogs
+$blog_data = new Blog_Data($conn, $categories);
 
 if ($blogId) {
-    $stmt = $conn->prepare("SELECT blogs.*, users.username FROM blogs
-                            JOIN users ON blogs.user_id = users.id WHERE blogs.id = ?");
-    $stmt->bind_param("i", $blogId);
-    $stmt->execute();
-    $blog = $stmt->get_result()->fetch_assoc();
+    $blog     = $blog_data->getBlog($blogId);
+    $comments = $blog_data->getComments($blogId);
 
-    $stmt = $conn->prepare("SELECT comments.comment, users.username FROM comments
-                            JOIN users ON comments.user_id = users.id
-                            WHERE comments.blog_id = ? ORDER BY comments.id DESC");
-    $stmt->bind_param("i", $blogId);
-    $stmt->execute();
-    $comments = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-
-    $shownBlogs = $blog ? [$blog] : [];
+    $shownBlogs = $blog ? [$blog] : [];   // for the Update form
 } else {
-    $showAll = isset($_GET['all']);
-    $perPage = 5;
+    $blogs = $blog_data->getBlogs();
 
-    // filters
-    $cat   = $_GET['cat'] ?? '';
-    $cat   = ($showAll && in_array($cat, $categories, true)) ? $cat : '';
-    $sort  = ($showAll && ($_GET['sort'] ?? '') === 'oldest') ? 'oldest' : 'newest';
-    $order = $sort === 'oldest' ? 'ASC' : 'DESC';
+    $showAll = $blog_data->showAll;
+    $cat     = $blog_data->cat;
+    $sort    = $blog_data->sort;
+    $pages   = $blog_data->pages;
+    $page    = $blog_data->page;
 
-    // count blogs
-    $stmt = $conn->prepare("SELECT COUNT(*) FROM blogs WHERE ? = '' OR category = ?");
-    $stmt->bind_param("ss", $cat, $cat);
-    $stmt->execute();
-    $total = $stmt->get_result()->fetch_row()[0];
-
-    $pages  = $showAll ? max(1, (int) ceil($total / $perPage)) : 1;
-    $page   = $showAll ? min(max(1, (int) ($_GET['page'] ?? 1)), $pages) : 1;
-    $offset = ($page - 1) * $perPage;
-
-    $stmt = $conn->prepare("SELECT blogs.*, users.username FROM blogs
-                            JOIN users ON blogs.user_id = users.id
-                            WHERE ? = '' OR blogs.category = ?
-                            ORDER BY blogs.created_at $order
-                            LIMIT $perPage OFFSET $offset");
-    $stmt->bind_param("ss", $cat, $cat);
-    $stmt->execute();
-    $blogs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-
-    $shownBlogs = $blogs;
+    $shownBlogs = $blogs;   // for the Update forms
 }
 ?>
 
@@ -200,20 +114,26 @@ if ($blogId) {
                 </div>
             </div>
 
+
+            <!-- comment with Ajax -->
             <div class="box comments">
                 <h2>Blog Comments</h2>
 
-                <?php foreach ($comments as $c): ?>
-                    <p class="comment"><b><?= htmlspecialchars($c['username'] ?? '') ?>:</b> <?= htmlspecialchars($c['comment'] ?? '') ?></p>
-                <?php endforeach; ?>
+                <div id="commentList">
+                    <?php foreach ($comments as $c): ?>
+                        <p class="comment"><b><?= htmlspecialchars($c['username'] ?? '') ?>:</b> <?= htmlspecialchars($c['comment'] ?? '') ?></p>
+                    <?php endforeach; ?>
+                </div>
 
                 <?php if ($isLoggedIn): ?>
-                    <form method="post" class="comment-form">
+                    <form method="post" class="comment-form" id="commentForm">
+                        <input type="hidden" name="blog_id" value="<?= $blogId ?>">
                         <input type="text" name="comment" placeholder="Write a comment...">
                         <button class="btn" name="comment-btn">Add comment</button>
                     </form>
                 <?php endif; ?>
             </div>
+
         <?php endif; ?>
 
     <?php else: ?>
@@ -284,86 +204,86 @@ if ($blogId) {
                 <?php endfor; ?>
             </div>
         <?php endif; ?>
-        
-        <!-- Add Blog -->
-        <?php if ($isLoggedIn): ?>
-        <dialog id="blogModal" class="modal">
-            <form method="post">
-                <div class="modal-top">
-                    <button type="button" class="link" onclick="blogModal.close()">&#128473;</button>
-                </div>
 
-                <div class="modal-body">
-                    <p class="req"><?= $error ?></p>
-
-                    <label>Blog Title <span class="req">*</span></label>
-                    <input type="text" name="title" required>
-
-                    <label>Blog Content <span class="req">*</span></label>
-                    <textarea name="content" rows="12" required></textarea>
-
-                    <label class="small">Category <span class="req">*</span>
-                        <select name="category" required>
-                            <option value="" selected>Select category</option>
-                            <?php foreach ($categories as $cat): ?>
-                                <option><?= htmlspecialchars($cat ?? '') ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </label>
-                </div>
-
-                <div class="modal-footer">
-                    <button type="button" class="link muted" onclick="blogModal.close()">Cancel</button>
-                    <button class="btn" name="publish-btn">Publish</button>
-                </div>
-            </form>
-        </dialog>
-        <?php if ($error): ?><script>blogModal.showModal();</script><?php endif; ?>
-        <?php endif; ?>
     <?php endif; ?>
 
-    <!-- Update Blog -->
-    <?php foreach ($shownBlogs as $b): ?>
-        <?php if ($isLoggedIn && $b['user_id'] == $_SESSION['userId']): ?>
-        <dialog id="edit<?= $b['id'] ?>" class="modal">
-            <form method="post">
-                <input type="hidden" name="blog_id" value="<?= $b['id'] ?>">
 
-                <div class="modal-top">
-                    <button type="button" class="link" onclick="this.closest('dialog').close()">&#128473;</button>
-                </div>
+        <!-- Add and Update Blog -->
+        <?php
+        $popups = [];
 
-                <div class="modal-body">
-                    <?php if ($editErrorId == $b['id']): ?>
-                        <p class="req"><?= $editError ?></p>
+        if ($isLoggedIn) {
+            $popups[] = null;
+
+            foreach ($shownBlogs as $b) {
+                if ($b['user_id'] == $_SESSION['userId']) {
+                    $popups[] = $b;
+                }
+            }
+        }
+        ?>
+
+        <?php foreach ($popups as $b): ?>
+            <?php
+            $isUpdate = ($b !== null);
+
+            if ($isUpdate) {
+                $popupId    = 'edit' . $b['id'];
+                $popupError = ($editErrorId == $b['id']) ? $editError : '';
+                $btnName    = 'update-btn';
+                $btnText    = 'Update';
+            } else {
+                $popupId    = 'blogModal';
+                $popupError = $error;
+                $btnName    = 'publish-btn';
+                $btnText    = 'Publish';
+            }
+            ?>
+
+            <dialog id="<?= $popupId ?>" class="modal">
+                <form method="post">
+                    <?php if ($isUpdate): ?>
+                        <input type="hidden" name="blog_id" value="<?= $b['id'] ?>">
                     <?php endif; ?>
 
-                    <label>Update Blog Title</label>
-                    <input type="text" name="title" value="<?= htmlspecialchars($b['title'] ?? '') ?>" required>
+                    <div class="modal-top">
+                        <button type="button" class="link" onclick="this.closest('dialog').close()">&#128473;</button>
+                    </div>
 
-                    <label>Update Blog Content</label>
-                    <textarea name="content" rows="12" required><?= htmlspecialchars($b['blog'] ?? '') ?></textarea>
+                    <div class="modal-body">
+                        <p class="req"><?= $popupError ?></p>
 
-                    <label class="small">Update Category
-                        <select name="category" required>
-                            <?php foreach ($categories as $cat): ?>
-                                <option <?= $cat === $b['category'] ? 'selected' : '' ?>><?= htmlspecialchars($cat) ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </label>
-                </div>
+                        <label>Blog Title <span class="req">*</span></label>
+                        <input type="text" name="title" value="<?= htmlspecialchars($b['title'] ?? '') ?>" required>
 
-                <div class="modal-footer">
-                    <button type="button" class="link muted" onclick="this.closest('dialog').close()">Cancel</button>
-                    <button class="btn" name="update-btn">Update</button>
-                </div>
-            </form>
-        </dialog>
-        <?php endif; ?>
-    <?php endforeach; ?>
+                        <label>Blog Content <span class="req">*</span></label>
+                        <textarea name="content" rows="12" required><?= htmlspecialchars($b['blog'] ?? '') ?></textarea>
+
+                        <label class="small">
+                            <span>Category</span>
+                            <select name="category" required>
+                                <?php if (!$isUpdate): ?>
+                                    <option value="" selected>Select category</option>
+                                <?php endif; ?>
+
+                                <?php foreach ($categories as $c): ?>
+                                    <option <?= ($isUpdate && $c === $b['category']) ? 'selected' : '' ?>><?= htmlspecialchars($c) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </label>
+                    </div>
+
+                    <div class="modal-footer">
+                        <button type="button" class="link muted" onclick="this.closest('dialog').close()">Cancel</button>
+                        <button class="btn" name="<?= $btnName ?>"><?= $btnText ?></button>
+                    </div>
+                </form>
+            </dialog>
+        <?php endforeach; ?>
 
     </div>
 
-    
+
+    <script src="ajax_comment.js"></script>
 </body>
 </html>
